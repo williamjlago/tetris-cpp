@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <string>
 #include <queue>
+#include <fstream>
 
 using namespace std;
 std::queue<std::string> messageQueue;
@@ -13,15 +14,21 @@ const int BOARD_WIDTH = 10;
 const int BOARD_HEIGHT = 20;
 const int TILE_SIZE = 32;
 const int UI_WIDTH = 6;
+static const int SAVE_KEY = 0x5A5A5A5A;
 
 int currentPiece = 0;
 int nextPiece = 0;
-int msgNum = 0;
-float nextMessageDelay = 0.0f;
 int currentX = BOARD_WIDTH / 2 - 2; 
 int currentY = 0; 
 int currentRotation = 0;
+int msgNum = 0;
+int score = 0;
+int bestScore = 0;
+float nextMessageDelay = 0.0f;
+float timer = 0;
+float delay = 0.5f;
 bool hasActivePiece = false;
+bool gameOver = false;
 
 int board[BOARD_HEIGHT][BOARD_WIDTH] = {0};
 
@@ -44,9 +51,6 @@ float lineClearTimer = 0.0f;
 float lineClearTotalTime = 0.5f; 
 std::vector<int> fullLines;
 
-// Scoring
-int score = 0;
-
 // Message scrolling
 std::string currentMessage;
 int messageOffset = 0; // how many characters have shifted into the field
@@ -66,6 +70,8 @@ void update(float dt);
 void updateScore(int linesCleared);
 void showMessage(const std::string &msg);
 void render(sf::RenderWindow &window);
+void saveHighScore(int best);
+int loadHighScore();
 
 int shapes[7][4][4] = {
     // I
@@ -120,8 +126,11 @@ int shapes[7][4][4] = {
 };
 
 int main() {
+    sf::Clock clock;
     srand((unsigned)time(0));
     sf::RenderWindow window(sf::VideoMode((BOARD_WIDTH + 2 + UI_WIDTH) * TILE_SIZE, (BOARD_HEIGHT + 2) * TILE_SIZE), "Tetris");
+
+    bestScore = loadHighScore();
 
     if (!tileTexture.loadFromFile("tile.png")) {
         return -1;
@@ -131,10 +140,6 @@ int main() {
     if (!gameFont.loadFromFile("nintendo-nes-font.ttf")) {
         return -1;
     }
-
-    sf::Clock clock;
-    float timer = 0;
-    float delay = 0.5f;
 
     nextPiece = rand() % 7;
 
@@ -213,6 +218,11 @@ int main() {
             nextMessageDelay -= dt;
         }
 
+        if (score > bestScore) {
+            bestScore = score;
+            saveHighScore(bestScore); // save new high score
+        }
+
         window.clear(sf::Color::Black);
         render(window);
         window.display();
@@ -232,7 +242,7 @@ void spawnPiece() {
 
     if (checkCollision(currentPiece, currentRotation, currentX, currentY)) {
         hasActivePiece = false;
-        messageQueue.push("GAME OVER!");
+        messageQueue.push("GAMEOVER");
     }
 }
 
@@ -273,8 +283,16 @@ void lockPiece() {
         }
     }
 
+    if (currentY == 0) {
+        // A piece locked at the top row
+        gameOver = true;
+        showMessage("GAME OVER!");
+    }
+
     hasActivePiece = false;
-    checkAndStartLineClear();
+    if (!gameOver) {
+        checkAndStartLineClear();
+    }
 }
 
 void checkAndStartLineClear() {
@@ -305,6 +323,8 @@ void finalizeLineClear() {
     lineClearActive = false;
 
     updateScore(count);
+    if (delay > 0.05)
+        delay -= 0.025;
 
     // Show a message based on how many lines were cleared
     if (count > 0) {
@@ -368,6 +388,7 @@ void removeLines(const std::vector<int>& lines) {
 }
 
 void update(float dt) {
+    if (gameOver) return; // do not spawn pieces if game over reached
     if (!hasActivePiece) {
         spawnPiece();
     }
@@ -380,8 +401,6 @@ void update(float dt) {
             lockPiece();
         }
     }
-
-
 }
 
 void updateScore(int linesCleared) {
@@ -398,8 +417,7 @@ void updateScore(int linesCleared) {
 
 void showMessage(const std::string &msg) {
     currentMessage = msg;
-    messageOffset = 0; // reset offset so message starts from right side
-    // The message starts off the right side. We'll consider that the message is initially invisible until scrolled in.
+    messageOffset = 0; 
 }
 
 void render(sf::RenderWindow &window) {
@@ -477,7 +495,7 @@ void render(sf::RenderWindow &window) {
     int uiStartX = (BOARD_WIDTH + 2) * TILE_SIZE; 
     int uiStartY = TILE_SIZE;
 
-    // NEXT label
+    // Next piece section
     {
         sf::Text nextText("NEXT", gameFont, 24);
         nextText.setFillColor(sf::Color::White);
@@ -510,6 +528,15 @@ void render(sf::RenderWindow &window) {
         window.draw(scoreText);
     }
 
+    // Best score
+    {
+        int bestY = uiStartY + 400; // below the message field
+        sf::Text bestText("BEST:\n" + std::to_string(bestScore), gameFont, 24);
+        bestText.setFillColor(sf::Color::White);
+        bestText.setPosition(uiStartX, bestY);
+        window.draw(bestText);
+    }
+
     // Message Field
     {
         int messageFieldY = uiStartY + 320;
@@ -529,7 +556,6 @@ void render(sf::RenderWindow &window) {
             window.draw(sprite);
         }
 
-        // Background for message field
         sf::RectangleShape msgBg(sf::Vector2f((float)messageFieldWidth, (float)messageFieldHeight));
         msgBg.setFillColor(sf::Color(0,0,0,200));
         msgBg.setPosition((float)messageFieldX, (float)messageFieldY);
@@ -561,5 +587,28 @@ void render(sf::RenderWindow &window) {
             msgText.setPosition((float)textPosX, (float)textPosY);
             window.draw(msgText);
         }
+    }
+}
+
+void saveHighScore(int best) {
+    // XOR score with save key to prevent highscore tampering
+    int encodedScore = best ^ SAVE_KEY;
+    std::ofstream out("save.bin", std::ios::binary);
+    if (out.is_open()) {
+        out.write(reinterpret_cast<char*>(&encodedScore), sizeof(encodedScore));
+        out.close();
+    }
+}
+
+int loadHighScore() {
+    std::ifstream in("save.bin", std::ios::binary);
+    if (in.is_open()) {
+        int encodedScore;
+        in.read(reinterpret_cast<char*>(&encodedScore), sizeof(encodedScore));
+        in.close();
+        // XOR again to decode
+        return encodedScore ^ SAVE_KEY;
+    } else {
+        return 0; // no saved file
     }
 }
